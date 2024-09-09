@@ -1,51 +1,42 @@
-import tensorflow as tf
-from tensorflow.keras import layers
+# Copyright (c) 2023 Qualcomm Technologies, Inc.
+# All Rights Reserved.
 
-class SubSpectralNorm(tf.keras.layers.Layer):
+import torch
+from torch import nn
+
+
+class SubSpectralNorm(nn.Module):
     def __init__(self, num_features, spec_groups=16, affine="Sub", batch=True, dim=2):
-        super(SubSpectralNorm, self).__init__()
+        super().__init__()
         self.spec_groups = spec_groups
         self.affine_all = False
-        self.sub_dim = dim
-        self.num_features = num_features
-
-        if affine == "Sub":
-            self.affine_norm = True
+        affine_norm = False
+        if (
+            affine == "Sub"
+        ):  # affine transform for each sub group. use affine of torch implementation
+            affine_norm = True
         elif affine == "All":
             self.affine_all = True
-            self.weight = self.add_weight(
-                shape=(1, num_features, 1, 1),
-                initializer='ones',
-                trainable=True,
-                name='weight'
-            )
-            self.bias = self.add_weight(
-                shape=(1, num_features, 1, 1),
-                initializer='zeros',
-                trainable=True,
-                name='bias'
-            )
-
+            self.weight = nn.Parameter(torch.ones((1, num_features, 1, 1)))
+            self.bias = nn.Parameter(torch.zeros((1, num_features, 1, 1)))
         if batch:
-            self.ssnorm = layers.BatchNormalization(center=self.affine_norm, scale=self.affine_norm)
+            self.ssnorm = nn.BatchNorm2d(num_features * spec_groups, affine=affine_norm)
         else:
-            self.ssnorm = layers.LayerNormalization(center=self.affine_norm, scale=self.affine_norm)
+            self.ssnorm = nn.InstanceNorm2d(num_features * spec_groups, affine=affine_norm)
+        self.sub_dim = dim
 
-    def call(self, x, training=False):
+    def forward(self, x):  # when dim h is frequency dimension
         if self.sub_dim in (3, -1):
-            x = tf.transpose(x, perm=[0, 1, 3, 2])
-
-        b, c, h, w = tf.shape(x)
+            x = x.transpose(2, 3)
+            x = x.contiguous()
+        b, c, h, w = x.size()
         assert h % self.spec_groups == 0
-
-        x = tf.reshape(x, [b, c * self.spec_groups, h // self.spec_groups, w])
-        x = self.ssnorm(x, training=training)
-        x = tf.reshape(x, [b, c, h, w])
-
+        x = x.view(b, c * self.spec_groups, h // self.spec_groups, w)
+        x = self.ssnorm(x)
+        x = x.view(b, c, h, w)
         if self.affine_all:
             x = x * self.weight + self.bias
-
         if self.sub_dim in (3, -1):
-            x = tf.transpose(x, perm=[0, 1, 3, 2])
-
+            x = x.transpose(2, 3)
+            x = x.contiguous()
         return x
